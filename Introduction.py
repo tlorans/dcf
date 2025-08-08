@@ -171,3 +171,66 @@ cost_of_debt_plot = (
 cost_of_debt_plot.save("./images/cost_of_debt.png", dpi=300)
 
 st.image("./images/cost_of_debt.png", caption="Required Return on Debt")
+
+st.write("""### Estimating the Capital Structure""")
+
+st.write(r"""
+         The final inputs for calculating WACC deal with the firm's capital structure, which is the company's mix of debt and equity financing.
+         As previously noted, WACC is a blend of a company's equity and debt cost of capital, based on the company's equity and debt-capital ratio.
+
+
+For the market value of equity, we can use the market capitalization of the firm, which is the stock price multiplied by the number of shares outstanding.
+
+In most cases, we can use the book value of debt from a company's latest balance sheet as an approximation of the market value of debt. Unlike equity,
+the market value of debt usually does not deviate too far from the book value. We take the Net Debt, which is the Total Debt minus Cash and Cash Equivalents from 
+the Balance Sheet.
+         """)
+
+# load the capital structure data from the CSV file
+capital_structure = pd.read_csv("./data/capital_structure.csv")
+
+# If not already there, compute equity weight as the residual
+if "w_equity" not in capital_structure.columns:
+    capital_structure["w_equity"] = 1 - capital_structure["w_debt"]
+
+# Reshape to long format for stacked bars
+capital_structure_long = capital_structure.melt(
+    id_vars=["symbol"],
+    value_vars=["w_debt", "w_equity"],
+    var_name="component",
+    value_name="weight"
+)
+
+# Sort by debt weight (so order is consistent)
+order_symbols = (
+    capital_structure.sort_values(by="w_debt", ascending=True)["symbol"]
+)
+capital_structure_long["symbol"] = pd.Categorical(
+    capital_structure_long["symbol"],
+    categories=order_symbols,
+    ordered=True
+)
+
+# Plot stacked bar chart
+capital_structure_plot = (
+    ggplot(capital_structure_long, aes(x="symbol", y="weight", fill="component")) +
+    geom_col() +
+    scale_y_continuous(labels=percent_format()) +
+    coord_flip() +
+    scale_fill_manual(
+        values={"w_debt": "#d95f02", "w_equity": "#1b9e77"},
+        labels={"w_debt": "Debt", "w_equity": "Equity"}
+    ) +
+    labs(
+        x="", y="",
+        fill="Component",
+        title="Capital Structure: Debt vs Equity"
+    )
+)
+
+capital_structure_plot.save("./images/capital_structure_stacked.png", dpi=300)
+
+st.image(
+    "./images/capital_structure_stacked.png",
+    caption="Capital Structure (Debt vs Equity) of Dow Jones Industrial Average constituents"
+)

@@ -20,6 +20,7 @@ prices_daily = tf.download_data(
   end_date="2023-12-31"
 )
 
+
 prices_daily = (prices_daily
   .groupby("symbol")
   .apply(lambda x: x.assign(counts=x["adjusted_close"].dropna().count()))
