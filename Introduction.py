@@ -442,59 +442,87 @@ n_years = 5  # forecast horizon
 # Example last historical FCFF (you may pull from your real data)
 FCFF0 = symbol_data["fcff"]
 
-# --- Implied growth solver (g for Y1-5, g_LT = g/2) ---
+# --- Implied growth with LT floor: g can be < 0, but g_LT = max(g/2, 0) ---
 
 def firm_value_from_g(FCFF0, WACC, n, g):
-    # Guard: terminal condition requires g/2 < WACC
-    if (WACC - g/2) <= 0:
+    # Disallow impossible compounding
+    if (1 + g) <= 0:
         return np.inf
 
-    r = (1 + g) / (1 + WACC)
-    # Stage 1: geometric series sum of FCFF0 * r^t from t=1..n
-    if abs(r - 1) < 1e-12:
-        stage1 = FCFF0 * n / (1 + WACC)  # near-equal rates fallback
-    else:
-        stage1 = FCFF0 * (r) * (1 - r**n) / (1 - r)
+    # Enforce non-negative long-term growth
+    g_lt = g / 2.0
+    if g_lt < 0.0:
+        g_lt = 0.0
 
-    # Stage 2: terminal value at n, discounted back
-    tv = FCFF0 * (1 + g)**(n + 1) / (WACC - g/2)
+    # Terminal condition
+    if (WACC - g_lt) <= 0:
+        return np.inf
+
+    # Stage 1 (years 1..n)
+    r = (1 + g) / (1 + WACC)
+    if abs(r - 1) < 1e-12:
+        stage1 = FCFF0 * n / (1 + WACC)
+    else:
+        stage1 = FCFF0 * r * (1 - r**n) / (1 - r)
+
+    # Stage 2 (terminal)
+    tv = FCFF0 * (1 + g)**(n + 1) / (WACC - g_lt)
     stage2 = tv / (1 + WACC)**n
 
     return stage1 + stage2
 
-def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=-0.9, g_high=None, tol=1e-8, max_iter=200):
-    # Upper bound must respect g/2 < WACC -> g < 2*WACC
-    if g_high is None:
-        g_high = min(2*WACC - 1e-6, 0.5)  # cap to something sane like 50%
+def implied_cagr_from_price(FCFF0, WACC, n, EV, g_min=-0.9, g_max=None, tol=1e-8, max_iter=200):
+    """
+    Finds g such that FirmValue(g) = EV with:
+      - Stage-1 growth g free to be negative
+      - Long-term growth g_LT = max(g/2, 0) >= 0
+    """
+    # Upper bound must respect g_LT < WACC -> g < 2*WACC when g >= 0
+    if g_max is None:
+        g_max = min(2*WACC - 1e-6, 0.5)  # also cap at +50% for sanity
 
-    f_low = firm_value_from_g(FCFF0, WACC, n, g_low) - EV
-    f_high = firm_value_from_g(FCFF0, WACC, n, g_high) - EV
+    # Evaluate f(g) = PV(g) - EV
+    def f(g):
+        return firm_value_from_g(FCFF0, WACC, n, g) - EV
 
-    # If bounds don't bracket, try to expand a bit
-    if not np.isfinite(f_low) or not np.isfinite(f_high) or f_low * f_high > 0:
-        # Try shifting bounds a few times
-        for mult in [1.5, 2.0, 3.0]:
-            g_low_try = max(-0.99, -mult*abs(g_low))
-            g_high_try = min(2*WACC - 1e-6, mult*abs(g_high))
-            f_low = firm_value_from_g(FCFF0, WACC, n, g_low_try) - EV
-            f_high = firm_value_from_g(FCFF0, WACC, n, g_high_try) - EV
-            if np.isfinite(f_low) and np.isfinite(f_high) and f_low * f_high < 0:
-                g_low, g_high = g_low_try, g_high_try
-                break
-        else:
-            return np.nan  # failed to bracket
+    # Robust bracketing: scan a grid for a sign change
+    grid = np.linspace(g_min, g_max, 61)  # 60 intervals
+    vals = []
+    for x in grid:
+        fx = f(x)
+        vals.append(fx if np.isfinite(fx) else np.nan)
+
+    # find first adjacent finite sign change
+    bracket = None
+    for i in range(len(grid)-1):
+        a, b = grid[i], grid[i+1]
+        fa, fb = vals[i], vals[i+1]
+        if np.isfinite(fa) and np.isfinite(fb) and fa * fb <= 0:
+            bracket = (a, b, fa, fb)
+            break
+
+    if bracket is None:
+        return np.nan  # no solution under constraints
+
+    g_low, g_high, f_low, f_high = bracket
 
     # Bisection
     for _ in range(max_iter):
         g_mid = 0.5 * (g_low + g_high)
-        f_mid = firm_value_from_g(FCFF0, WACC, n, g_mid) - EV
+        f_mid = f(g_mid)
+        if not np.isfinite(f_mid):
+            # shrink towards finite side
+            g_high = g_mid
+            continue
         if abs(f_mid) < tol:
             return g_mid
-        if f_low * f_mid < 0:
+        if f_low * f_mid <= 0:
             g_high, f_high = g_mid, f_mid
         else:
             g_low, f_low = g_mid, f_mid
+
     return g_mid  # best effort
+
 
 # --- Use it with your current variables ---
 EV = float(market_cap + D_market)  # enterprise value (equity + net debt)
@@ -514,7 +542,7 @@ if np.isnan(implied_g):
     
     st.warning("Could not find an implied growth that matches the current price with these inputs.")
 else:
-    implied_lt = implied_g / 2.0
+    implied_lt = max(implied_g/2.0, 0.0)
     # st.write("### Implied Growth to Match Current Price")
     # st.write(f"- **Implied CAGR (Years 1–{n_years})**: {implied_g:.2%}")
     # st.write(f"- **Implied Long-term growth (from Year {n_years+1})**: {implied_lt:.2%}")
