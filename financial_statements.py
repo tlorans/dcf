@@ -10,7 +10,7 @@ load_dotenv()
 
 print(fmp_get(
   resource="balance-sheet-statement", 
-  symbol="MSFT", 
+  symbol="NVDA", 
   params={"period": "annual", "limit": 5},
   to_pandas=True
 ))

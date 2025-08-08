@@ -2,6 +2,12 @@ import streamlit as st
 import pandas_datareader as pdr
 import datetime
 import pandas as pd
+import numpy as np
+import tidyfinance as tf
+
+from plotnine import *
+from mizani.formatters import percent_format
+from adjustText import adjust_text
 
 st.title("Free Cash Flow to the Firm (FCFF) Valuation Model")
 
@@ -81,10 +87,46 @@ Where:
 - $\text{ERP}$ is the equity risk premium (the expected return of the market minus the risk-free rate)
          """)
 
-# Risk-free Rate
-timespan = 100
-current_date = datetime.date.today()
-past_date = current_date-datetime.timedelta(days=timespan)
-risk_free_rate_df = pdr.DataReader('^TNX', 'yahoo', past_date, current_date) 
-risk_free_rate = (risk_free_rate_df.iloc[len(risk_free_rate_df)-1,5])/100
-print(f"Risk-free rate: {risk_free_rate:.2%}")
+
+
+risk_free_rate = 0.0425  # Example: 4.25% risk-free rate
+st.write(rf""" The risk-free rate for a US 10Y Treasury bond is {risk_free_rate * 100:.2f}%.
+         """)
+erp = 0.0433  # Example: 4.33% equity risk premium
+st.write(rf""" We take the last estimated ERP from Damodaran's website, which is {erp * 100:.2f}%.""")
+
+
+st.write("""We compute the betas for the Dow Jones Industrial Average constituents using the CAPM model, using monthly returns and the last 5 years of data.""")
+
+st.image("./images/betas.png", caption="Betas for Dow Jones Industrial Average constituents")
+
+# load the betas from the CSV file
+betas = pd.read_csv("./data/betas.csv")
+
+# Calculate the required return on equity for each stock
+betas["required_return"] = risk_free_rate + betas["estimate"] * erp
+# Sort the betas by required return
+betas = betas.sort_values(by="required_return", ascending=True)
+
+# Make symbol a categorical variable with the correct order
+betas["symbol"] = pd.Categorical(
+    betas["symbol"],
+    categories=betas["symbol"],  # keeps the sorted order
+    ordered=True
+)
+
+# Plot
+required_return_plot = (
+    ggplot(betas, aes(x="symbol", y="required_return")) +
+    geom_col() +
+    scale_y_continuous(labels=percent_format()) +
+    coord_flip() +
+    labs(
+        x="Required Return on Equity", y="", 
+        title="Required Return on Equity"
+    )
+)
+
+required_return_plot.save("./images/required_return.png", dpi=300)
+
+st.image("./images/required_return.png", caption="Required Return on Equity for Dow Jones Industrial Average constituents")
