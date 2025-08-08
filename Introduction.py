@@ -306,7 +306,7 @@ from scipy.optimize import fsolve
 
 # --- Step 1: Inputs ---
 rf = r            # Risk-free rate
-T = 1.0          # Horizon (years)
+T = 10.0          # Horizon (years)
 LGD = 1.0         # Loss given default (100%)
 E_obs = E         # Observed equity value
 D_face = D        # Face value of debt (from balance sheet)
@@ -571,3 +571,183 @@ else:
     \quad
     g_{{\text{{LT}}}} = \frac{{g}}{2} = {glt_str}
     """)
+
+st.write(r"""
+## Stress Testing the Model
+
+We can also stress test the model by varying the inputs and observing how the valuation changes.
+""")
+
+
+import numpy as np
+from math import log, sqrt, exp
+try:
+    from scipy.stats import norm
+    cnd = norm.cdf
+except Exception:
+    import math
+    def cnd(x):
+        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+def dcf_value_fcff(FCFF0, g, n, WACC):
+    """Two-stage FCFF DCF with LT growth floor: g_LT = max(g/2, 0)."""
+    if (1 + g) <= 0:
+        return np.inf
+    g_lt = max(g/2.0, 0.0)
+    if (WACC - g_lt) <= 0:
+        return np.inf
+
+    r = (1 + g) / (1 + WACC)
+    # Stage 1
+    if abs(r - 1) < 1e-12:
+        stage1 = FCFF0 * n / (1 + WACC)
+    else:
+        stage1 = FCFF0 * r * (1 - r**n) / (1 - r)
+    # Stage 2
+    tv = FCFF0 * (1 + g)**(n + 1) / (WACC - g_lt)
+    stage2 = tv / (1 + WACC)**n
+    return stage1 + stage2
+
+def merton_from_V(V, D_face, rf, sigma, T):
+    """Given asset value V, compute E (equity), d1,d2, PD under Merton."""
+    if V <= 0 or D_face <= 0 or sigma <= 0 or T <= 0:
+        return np.nan, np.nan, np.nan, np.nan
+    d1 = (log(V / D_face) + (rf + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    E = V * cnd(d1) - D_face * exp(-rf * T) * cnd(d2)
+    PD = 1.0 - cnd(d2)
+    return E, d1, d2, PD
+
+def kd_from_PD(PD, rf, LGD):
+    """Pre-tax cost of debt from PD and LGD."""
+    return (1 - PD) * rf + PD * LGD
+
+def wacc_from_components(E, Dmkt, ke, kd):
+    """Market-value weighted WACC."""
+    total = E + Dmkt
+    if total <= 0:
+        return np.nan, np.nan, np.nan
+    we = E / total
+    wd = Dmkt / total
+    return we * ke + wd * kd, we, wd
+
+def stress_solve_single_g(
+    g, FCFF0, n, rf, ke, D_face, sigma, T,
+    LGD=1.0, wacc_init=None, tol=1e-7, max_iter=100
+):
+    """
+    Fixed-point iteration:
+      Start with WACC, DCF -> V
+      Merton at that V -> (E, PD, D_market)
+      PD -> k_d; (E,D_market,ke,kd) -> new WACC
+      Repeat until convergence.
+    """
+    if wacc_init is None:
+        # Conservative starting guess: ke weighted with book D
+        # (You can also reuse the WACC you computed earlier.)
+        wacc_init = ke * 0.7 + (rf + 0.02) * 0.3  # simple fallback
+    WACC = float(wacc_init)
+
+    V_prev = None
+    for _ in range(max_iter):
+        # 1) DCF with current WACC
+        V = dcf_value_fcff(FCFF0, g, n, WACC)
+        if not np.isfinite(V):
+            return {"ok": False, "msg": "DCF invalid (rates/growth combo)."}
+        # 2) Merton given V
+        E, d1, d2, PD = merton_from_V(V, D_face, rf, sigma, T)
+        if not np.isfinite(E) or E <= 0:
+            return {"ok": False, "msg": "Merton invalid (E non-positive)."}
+        Dmkt = V - E
+        if Dmkt <= 0:
+            return {"ok": False, "msg": "Implied debt market value non-positive."}
+        # 3) k_d from PD
+        kd = kd_from_PD(PD, rf, LGD)
+        # 4) New WACC
+        WACC_new, we, wd = wacc_from_components(E, Dmkt, ke, kd)
+        if not np.isfinite(WACC_new):
+            return {"ok": False, "msg": "WACC invalid."}
+
+        # Convergence checks on both WACC and V
+        if V_prev is not None and abs(V - V_prev) < tol and abs(WACC_new - WACC) < tol:
+            return {
+                "ok": True,
+                "g": g,
+                "V": V,
+                "E": E,
+                "Dmkt": Dmkt,
+                "PD": PD,
+                "kd": kd,
+                "WACC": WACC_new,
+                "we": we,
+                "wd": wd,
+                "d1": d1,
+                "d2": d2
+            }
+        V_prev = V
+        WACC = WACC_new
+
+    return {"ok": False, "msg": "Did not converge within max_iter."}
+
+
+# ---------- Quick Stress: scale implied_g only (all else fixed) ----------
+st.write("## Quick Stress: Scale the Implied Growth (all other inputs fixed)")
+
+if np.isnan(implied_g):
+    st.warning("Implied growth (g) wasn't found above, so I can't run the scaling stress. Check inputs/EV.")
+else:
+    # Choose a simple scale for g: e.g., 80% of implied_g
+    scale_pct = st.slider("Scale factor for implied g (%)", 0, 150, 80, 5)
+    scale_mult = scale_pct / 100.0
+    new_g = float(implied_g) * scale_mult
+    new_g_lt = max(new_g / 2.0, 0.0)  # keep your non-negative LT rule
+
+    # Keep ALL other parameters exactly as already set
+    rf = float(risk_free_rate)
+    ke = float(required_return)
+    FCFF0 = float(FCFF0)  # or float(fcff) if that's your last FCFF
+    D_face = float(net_debt if net_debt > 0 else 1e-6)
+    sigma_used = float(sigma)  # same sigma as above
+    T_used = float(T)          # same T as above
+    LGD_used = float(LGD)      # same LGD as above
+    wacc_init_guess = float(WACC)  # start from your current WACC
+
+    res = stress_solve_single_g(
+        g=new_g,
+        FCFF0=FCFF0,
+        n=int(n_years),
+        rf=rf,
+        ke=ke,
+        D_face=D_face,
+        sigma=sigma_used,
+        T=T_used,
+        LGD=LGD_used,
+        wacc_init=wacc_init_guess,
+        tol=1e-7,
+        max_iter=200
+    )
+
+ 
+
+
+    if not res["ok"]:
+        st.warning(f"Scaled g = {new_g:.2%}: {res['msg']}")
+    else:
+        st.write("### Scaled scenario results")
+        st.latex(fr"g = {new_g*100:.2f}\%, \quad g_{{\text{{LT}}}} = \max(g/2,0) = {new_g_lt*100:.2f}\%")
+        st.write({
+            "V (EV)": f"{res['V']:,.0f}",
+            "E (Equity)": f"{res['E']:,.0f}",
+            "D_market": f"{res['Dmkt']:,.0f}",
+            "PD": f"{res['PD']:.2%}",
+            "k_d": f"{res['kd']*100:.2f}%",
+            "WACC": f"{res['WACC']*100:.2f}%",
+            "w_e": f"{res['we']*100:.1f}%",
+            "w_d": f"{res['wd']*100:.1f}%"
+        })
+    # result of new equity valuation vs market cap
+        percentage_change_EV = (res["V"] - EV) / EV * 100.0
+        percentage_change_equity = (res["E"] - market_cap) / market_cap * 100.0
+
+        st.write(f"Percentage change in EV from scaling g: {percentage_change_EV:.2f}%")
+        st.write(f"Percentage change in Equity from scaling g: {percentage_change_equity:.2f}%")
