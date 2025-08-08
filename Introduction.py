@@ -126,7 +126,7 @@ The Weighted Average Cost of Capital (WACC) is the average rate of the reates of
          """)
 
 st.latex(r"""
-WACC = \frac{E}{D + E} \cdot r_e + \frac{D}{D + E} \cdot r_d \cdot (1 - \tau)
+WACC = \frac{E}{D + E} \cdot r_e + \frac{D}{D + E} \cdot r_d
          """)
 
 st.write(r"""
@@ -135,7 +135,7 @@ Where:
 - $D$ is the market value of debt
 - $r_e$ is the cost of equity
 - $r_d$ is the cost of debt
-- $\tau$ is the effective tax rate
+
          """)
 
 st.write("""### Required Return on Equity ($r_e$)""")
@@ -167,6 +167,15 @@ st.write("""We compute the betas using the CAPM model, using monthly returns and
 # load the betas from the CSV file
 betas = pd.read_csv("./data/betas.csv")
 
+beta_series = betas.loc[betas["symbol"] == selected_symbol, "estimate"]
+
+if beta_series.empty:
+    st.warning(f"No beta found for {selected_symbol}. Using β = 1.00 as a fallback.")
+    selected_beta = 1.0
+else:
+    selected_beta = float(beta_series.iloc[0])
+
+
 selected_beta = betas[betas["symbol"] == selected_symbol]["estimate"].values[0]
 
 st.write(f"""The beta for {selected_symbol} is:""")
@@ -187,50 +196,69 @@ required_return_str = f"{required_return * 100:.2f}%"
 
 st.write(f"""The required return on equity for {selected_symbol} is therefore {required_return_str}.
 """)
-
-st.write("""### Required Return on Debt ($r_d$)""")
-
-st.write(r"""
-         Firms have a cost of debt, which is the interest rate a company pays on its debt, such as bonds and loans. 
-         From the lender's perspective, this rate is the required return on debt.
-
-         We can obtain it directly from the firm's Interest Expense from the Income Statement and Total Debt from the Balance Sheet.
-
-         After dividing the Interest Expense by Total Debt to calculate the required rate of return on debt, we need to multiply this rate 
-         by (1 - tax rate) to account for the tax shield on interest payments. The reason for this is because there are tax deductions on interest paids. 
-         As a result, the net cost of a company's debt is the amount of interesst the firm is paying minus the amount it has saved in taxes because of its 
-         tax-deductible interest payments.
-         """)
-
-# load the cost of debt data from the CSV file
-cost_of_debt = pd.read_csv("./data/cost_of_debt.csv")
-selected_cost_of_debt = cost_of_debt[cost_of_debt["symbol"] == selected_symbol]
-
-cost_of_debt = selected_cost_of_debt["cost_of_debt"].values[0]
-tax_rate = selected_cost_of_debt["avg_effective_tax_rate"].values[0]
-after_tax_cost_of_debt = selected_cost_of_debt["after_tax_cost_of_debt"].values[0]
-
-st.latex(f"""
-r_d = {cost_of_debt * 100:.2f}\% \cdot (1 - {tax_rate:.2f})
-""")
-
-st.latex(f"""
-         = {after_tax_cost_of_debt * 100:.2f}\%
-""")
-
-st.write("""### Estimating the Capital Structure""")
+st.write("### Inferring the Cost and Market Value of Debt from Equity Prices")
 
 st.write(r"""
-         The final inputs for calculating WACC deal with the firm's capital structure, which is the company's mix of debt and equity financing.
-         As previously noted, WACC is a blend of a company's equity and debt cost of capital, based on the company's equity and debt-capital ratio.
+We start from **observed market capitalization** $E$ (equity value) and the **face value of debt** $D$ (from the balance sheet or bond data).  
+We do **not** assume enterprise value in advance. Instead, we invert a Merton-style structural model to recover the **implied asset value** $V$ that is consistent with the observed equity price.
+
+---
+
+**Step 1 — Merton model for equity**
+
+In the Merton framework, equity is a call option on the firm's assets with strike price equal to the face value of debt:
+
+$E = V \cdot N(d_1) - D \cdot e^{-r_f T} \, N(d_2)$
+
+where:
+
+$d_1 = \frac{\ln(V/D) + \left(r_f + \tfrac{1}{2}\sigma^2\right)T}{\sigma\sqrt{T}},$  
+$d_2 = d_1 - \sigma\sqrt{T}$
+
+---
+
+**Step 2 — Solving for asset value**
+
+We fix the observed $E$ and solve for $V$ such that the Merton pricing equation holds.  
+This $V$ represents the market value of the firm's assets, consistent with the market price of equity.
+
+---
+
+**Step 3 — Probability of default and cost of debt**
+
+From $d_2$, the **risk-neutral probability of default** over horizon $T$ is:
+
+$\pi = 1 - N(d_2)$
+
+Given a loss-given-default $L$, the (pre-tax) **cost of debt** follows:
+
+$r_d = (1-\pi) r_f + \pi L$
+
+so that the **default spread** is:
+
+$\text{Default spread} = r_d - r_f$
+
+---
+
+**Step 4 — Market value of debt**
+
+The market value of debt is the residual:
+
+$D_{\text{market}} = V - E$
+
+Because $\pi > 0$, we generally have:
+
+$D_{\text{market}} < D_{\text{face}}$
+
+reflecting the discount investors demand for bearing default risk.
+
+---
+
+We use Damodaran's total market standard deviation of firm value to proxy $\sigma$.
+""")
 
 
-For the market value of equity, we can use the market capitalization of the firm, which is the stock price multiplied by the number of shares outstanding.
-
-In most cases, we can use the book value of debt from a company's latest balance sheet as an approximation of the market value of debt. Unlike equity,
-the market value of debt usually does not deviate too far from the book value. We take the Net Debt, which is the Total Debt minus Cash and Cash Equivalents from 
-the Balance Sheet.
-         """)
+sigma = 0.2922  # Example: 29.22% annualized firm value volatility
 
 market_cap = pd.read_csv("./data/market_caps.csv")
 # Load balance sheet statements
@@ -239,34 +267,121 @@ balance_sheet_statements = pd.read_csv("./data/balance_sheet_statements.csv")
 selected_market_cap = market_cap[market_cap["symbol"] == selected_symbol]
 selected_balance_sheet = balance_sheet_statements[balance_sheet_statements["symbol"] == selected_symbol]
 
+# load the cost of debt data from the CSV file
+cost_of_debt = pd.read_csv("./data/cost_of_debt.csv")
+selected_cost_of_debt = cost_of_debt[cost_of_debt["symbol"] == selected_symbol]
+
 # get the latest balance sheet data for the selected symbol
 latest_balance_sheet = selected_balance_sheet.sort_values("calendar_year").iloc[-1]
 net_debt = latest_balance_sheet["net_debt"]
 market_cap = selected_market_cap["market_cap"].values[0]
-we = selected_market_cap["market_cap"].values[0] / (selected_market_cap["market_cap"].values[0] + net_debt)
-wd = net_debt / (selected_market_cap["market_cap"].values[0] + net_debt)
+avg_effective_tax_rate = selected_cost_of_debt["avg_effective_tax_rate"].values[0]
 
 
-st.latex(f"""
-w_e = \\frac{{{market_cap:,.0f}}}{{{market_cap:,.0f} + {net_debt:,.0f}}} = {we:.2f}
+
+import numpy as np
+from math import log, sqrt, exp
+try:
+    from scipy.stats import norm
+    cnd = norm.cdf
+except:
+    # Simple CND fallback if SciPy isn't available
+    import math
+    def cnd(x):
+        return 0.5 * (1 + math.erf(x / sqrt(2)))
+
+# Inputs from your app (already defined earlier)
+E = float(market_cap)                            # market equity value
+D = float(net_debt if net_debt > 0 else 0.0)     # debt proxy (use better face value if you have it)
+r = float(risk_free_rate)
+T = 10.0
+LGD = 1.
+
+st.latex(fr"""
+d_1 = \frac{{\ln\left(\frac{{{E+D:,.0f}}}{{{D:,.0f}}}\right) + \left({r*100:.2f}\% + \tfrac{{1}}{{2}}\cdot{{{sigma:.4f}}}^2\right)\cdot{{{T}}}}}{{{{{sigma:.4f}}}\cdot\sqrt{{{T}}}}}
 """)
 
-st.latex(f"""
-w_d = \\frac{{{net_debt:,.0f}}}{{{market_cap:,.0f} + {net_debt:,.0f}}} = {wd:.2f}
+
+from scipy.optimize import fsolve
+
+# --- Step 1: Inputs ---
+rf = r            # Risk-free rate
+T = 1.0          # Horizon (years)
+LGD = 1.0         # Loss given default (100%)
+E_obs = E         # Observed equity value
+D_face = D        # Face value of debt (from balance sheet)
+
+# --- Step 2: Merton model functions ---
+def merton_equity_value(V):
+    """Merton equity valuation given asset value V."""
+    d1 = (log(V / D_face) + (rf + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+    return V * cnd(d1) - D_face * exp(-rf * T) * cnd(d2)
+
+# --- Step 3: Solve for asset value V so E_model = E_obs ---
+V_initial_guess = E_obs + D_face
+V_solution = fsolve(lambda V: merton_equity_value(V) - E_obs, V_initial_guess)[0]
+
+# --- Step 4: Compute d1, d2, PD ---
+d1 = (log(V_solution / D_face) + (rf + 0.5 * sigma**2) * T) / (sigma * sqrt(T))
+d2 = d1 - sigma * sqrt(T)
+PD = 1 - cnd(d2)  # Risk-neutral probability of default
+
+# --- Step 5: Cost of debt ---
+r_d = (1 - PD) * rf + PD * LGD
+default_spread = r_d - rf
+
+# --- Step 6: Market value of debt ---
+D_market = V_solution - E_obs
+
+
+st.latex(fr"""
+d_2 = {d2:.4f},\quad
+\pi = 1 - N(d_2) = {PD:.2%}
+""")
+
+st.latex(fr"""
+r_d = (1 - \pi) \cdot {rf * 100:.2f}\% + {PD * 100:.2f} \cdot {LGD * 100:.2f}\% = {r_d * 100:.2f}\%
+""")
+
+st.latex(fr"""
+D_{{\text{{market}}}} = {V_solution:,.0f} - {E_obs:,.0f} = {D_market:,.0f}
 """)
 
 st.write("""### Bringing it all together: WACC""")
 
 st.write(r"""
+         The final inputs for calculating WACC deal with the firm's capital structure, which is the company's mix of debt and equity financing.
+         As previously noted, WACC is a blend of a company's equity and debt cost of capital, based on the company's equity and debt-capital ratio.
+
+
+For the market value of equity, we can use the market capitalization of the firm, which is the stock price multiplied by the number of shares outstanding.
+
+For the market value of debt, we can use the market value of debt that we just calculated.
+         """)
+
+we = selected_market_cap["market_cap"].values[0] / (selected_market_cap["market_cap"].values[0] + D_market)
+wd = D_market / (selected_market_cap["market_cap"].values[0] + D_market)
+
+
+st.latex(f"""
+w_e = \\frac{{{market_cap:,.0f}}}{{{market_cap:,.0f} + {D_market:,.0f}}} = {we:.2f}
+""")
+
+st.latex(f"""
+w_d = \\frac{{{D_market:,.0f}}}{{{market_cap:,.0f} + {D_market:,.0f}}} = {wd:.2f}
+""")
+
+
+st.write(r"""
          Now that we have all the components, we can calculate the WACC.
          """)
 
-WACC = we * required_return + wd * after_tax_cost_of_debt
-avg_effective_tax_rate = selected_cost_of_debt["avg_effective_tax_rate"].values[0]
+WACC = we * required_return + wd * r_d
 
 # General WACC formula
 st.latex(r"""
-\text{WACC} = w_e \cdot r_e + w_d \cdot r_d (1 - \tau)
+\text{WACC} = w_e \cdot r_e + w_d \cdot r_d
 """)
 
 # Numeric substitution
@@ -274,7 +389,7 @@ st.latex(
     fr"""
 \text{{WACC}} =
 {we * 100:.2f}\% \cdot {required_return * 100:.2f}\% +
-{wd * 100:.2f}\% \cdot {cost_of_debt * 100:.2f}\% \times (1 - {avg_effective_tax_rate * 100:.2f}\%)
+{wd * 100:.2f}\% \cdot {r_d * 100:.2f}\%
 """
 )
 
@@ -347,7 +462,7 @@ def firm_value_from_g(FCFF0, WACC, n, g):
 
     return stage1 + stage2
 
-def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=0., g_high=WACC, tol=1e-8, max_iter=200):
+def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=-0.9, g_high=None, tol=1e-8, max_iter=200):
     # Upper bound must respect g/2 < WACC -> g < 2*WACC
     if g_high is None:
         g_high = min(2*WACC - 1e-6, 0.5)  # cap to something sane like 50%
@@ -382,7 +497,7 @@ def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=0., g_high=WACC, tol=1e-8,
     return g_mid  # best effort
 
 # --- Use it with your current variables ---
-EV = float(market_cap + net_debt)  # enterprise value (equity + net debt)
+EV = float(market_cap + D_market)  # enterprise value (equity + net debt)
 
 implied_g = implied_cagr_from_price(
     FCFF0=float(FCFF0),
@@ -391,7 +506,12 @@ implied_g = implied_cagr_from_price(
     EV=EV
 )
 
+if FCFF0 <= 0:
+    st.warning("FCFF0 is non-positive; implied growth cannot be solved under the Gordon setup.")
+
+
 if np.isnan(implied_g):
+    
     st.warning("Could not find an implied growth that matches the current price with these inputs.")
 else:
     implied_lt = implied_g / 2.0
