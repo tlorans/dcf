@@ -285,19 +285,30 @@ st.latex(
 """
 )
 
-
-st.write("""## Free Cash Flow to the Firm (FCFF)""")
-
-st.write(""" ### Forecasting FCFF""")
+st.write("## Reverse-engineering the Implied Growth Rate")
 
 st.write(r"""
-         The next step is to forecast the FCFF for the next 5 years. 
-         We can use the historical FCFF data to estimate the growth rate of FCFF, and then use that growth rate to forecast the FCFF for the next 5 years.
+We can work backwards from the **current market price** (or Enterprise Value) to determine the growth rate 
+that the market is implicitly assuming in the first stage of the DCF.
 
-         We estimate the growth rate with a CAGR (Compound Annual Growth Rate) calculation.
-         The long-term growth rate is the rate at which we expect the FCFF to grow after the first 5 years, assuming to be half of the CAGR.
+We assume:
+- A constant annual growth rate $g$ for the first $n$ years (Stage 1),
+- A long-term growth rate $g_{\text{LT}} = g / 2$ thereafter (Stage 2),
+- A Weighted Average Cost of Capital $WACC$.
+
+The **implied growth rate** is the value of $g$ that satisfies:
+""")
+
+st.latex(r"""
+     \underbrace{
+\sum_{t=1}^{n} \frac{FCFF_0 \cdot (1+g)^t}{(1+WACC)^t}
+}_{\text{Stage 1}}
+\;+\;
+\underbrace{
+\frac{FCFF_0 \cdot (1+g)^{n+1}}{WACC - g/2} \cdot \frac{1}{(1+WACC)^n}
+}_{\text{Stage 2}}
+= \text{EV}
          """)
-
 
 
 # growth_forecast_data 
@@ -309,59 +320,106 @@ growth_forecast_data = (
 # Filter for the chosen symbol
 symbol_data = growth_forecast_data[growth_forecast_data["symbol"] == selected_symbol].iloc[0]
 
-# Parameters
-WACC = 0.08
-cagr = symbol_data["cagr"]
-lt_growth = symbol_data["long_term_growth"]
+
+# cagr = symbol_data["cagr"]
+# lt_growth = symbol_data["long_term_growth"]
 n_years = 5  # forecast horizon
 # Example last historical FCFF (you may pull from your real data)
 FCFF0 = symbol_data["fcff"]
 
-# Build LaTeX-safe strings for rates with escaped percent signs
-wacc_str = f"{WACC*100:.2f}\\%"
-cagr_str = f"{cagr*100:.2f}\\%"
-ltg_str = f"{lt_growth*100:.2f}\\%"
-fcff0_str = f"{FCFF0:,.0f}"  # no decimals, thousands separator
+# --- Implied growth solver (g for Y1-5, g_LT = g/2) ---
 
-# Interpolated LaTeX formula with explicit growth
-latex_formula = fr"""
+def firm_value_from_g(FCFF0, WACC, n, g):
+    # Guard: terminal condition requires g/2 < WACC
+    if (WACC - g/2) <= 0:
+        return np.inf
+
+    r = (1 + g) / (1 + WACC)
+    # Stage 1: geometric series sum of FCFF0 * r^t from t=1..n
+    if abs(r - 1) < 1e-12:
+        stage1 = FCFF0 * n / (1 + WACC)  # near-equal rates fallback
+    else:
+        stage1 = FCFF0 * (r) * (1 - r**n) / (1 - r)
+
+    # Stage 2: terminal value at n, discounted back
+    tv = FCFF0 * (1 + g)**(n + 1) / (WACC - g/2)
+    stage2 = tv / (1 + WACC)**n
+
+    return stage1 + stage2
+
+def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=-0.9, g_high=None, tol=1e-8, max_iter=200):
+    # Upper bound must respect g/2 < WACC -> g < 2*WACC
+    if g_high is None:
+        g_high = min(2*WACC - 1e-6, 0.5)  # cap to something sane like 50%
+
+    f_low = firm_value_from_g(FCFF0, WACC, n, g_low) - EV
+    f_high = firm_value_from_g(FCFF0, WACC, n, g_high) - EV
+
+    # If bounds don't bracket, try to expand a bit
+    if not np.isfinite(f_low) or not np.isfinite(f_high) or f_low * f_high > 0:
+        # Try shifting bounds a few times
+        for mult in [1.5, 2.0, 3.0]:
+            g_low_try = max(-0.99, -mult*abs(g_low))
+            g_high_try = min(2*WACC - 1e-6, mult*abs(g_high))
+            f_low = firm_value_from_g(FCFF0, WACC, n, g_low_try) - EV
+            f_high = firm_value_from_g(FCFF0, WACC, n, g_high_try) - EV
+            if np.isfinite(f_low) and np.isfinite(f_high) and f_low * f_high < 0:
+                g_low, g_high = g_low_try, g_high_try
+                break
+        else:
+            return np.nan  # failed to bracket
+
+    # Bisection
+    for _ in range(max_iter):
+        g_mid = 0.5 * (g_low + g_high)
+        f_mid = firm_value_from_g(FCFF0, WACC, n, g_mid) - EV
+        if abs(f_mid) < tol:
+            return g_mid
+        if f_low * f_mid < 0:
+            g_high, f_high = g_mid, f_mid
+        else:
+            g_low, f_low = g_mid, f_mid
+    return g_mid  # best effort
+
+# --- Use it with your current variables ---
+EV = float(market_cap + net_debt)  # enterprise value (equity + net debt)
+
+implied_g = implied_cagr_from_price(
+    FCFF0=float(FCFF0),
+    WACC=float(WACC),
+    n=int(n_years),
+    EV=EV
+)
+
+if np.isnan(implied_g):
+    st.warning("Could not find an implied growth that matches the current price with these inputs.")
+else:
+    implied_lt = implied_g / 2.0
+    # st.write("### Implied Growth to Match Current Price")
+    # st.write(f"- **Implied CAGR (Years 1–{n_years})**: {implied_g:.2%}")
+    # st.write(f"- **Implied Long-term growth (from Year {n_years+1})**: {implied_lt:.2%}")
+
+    # Show the numeric substitution DCF with implied g
+    wacc_str = f"{WACC*100:.2f}\\%"
+    g_str = f"{implied_g*100:.2f}\\%"
+    glt_str = f"{implied_lt*100:.2f}\\%"
+    fcff0_str = f"{FCFF0:,.0f}"
+    n_str = str(n_years)
+
+    st.latex(fr"""
 \text{{Firm Value}} =
-\sum_{{t=1}}^{{{n_years}}}
-\underbrace{{\frac{{{fcff0_str} \times (1+{cagr_str})^t}}{{(1+{wacc_str})^t}}}}_{{\text{{Stage 1}}}}
-+
-\underbrace{{\frac{{{fcff0_str} \times (1+{cagr_str})^{{{n_years+1}}}}}{{({wacc_str} - {ltg_str})}}
-\cdot \frac{{1}}{{(1+{wacc_str})^{n_years}}}}}_{{\text{{Stage 2}}}}
-"""
-# Display the LaTeX formula
-st.latex(latex_formula)
-
-# Optional: parameters summary
-st.write(f"**CAGR (5Y):** {cagr:.2%}")
-st.write(f"**Long-term growth rate:** {lt_growth:.2%}")
-st.write(f"**WACC:** {WACC:.2%}")
-
-# string interpolated formula for DCF where we put the value of cagr for growth rate 
-
-# # Merge with long-term growth rate
-# lt_growth = cagr_df.loc[cagr_df["symbol"] == selected_symbol, "long_term_growth"].values[0]
-
-# WACC = 0.08  # 8% discount rate
+\sum_{{t=1}}^{{{n_str}}}
+\frac{{{fcff0_str}\cdot (1+{g_str})^t}}{{(1+{wacc_str})^t}}
++\;
+\frac{{{fcff0_str}\cdot (1+{g_str})^{{{int(n_years)+1}}}}}{{{wacc_str} - {glt_str}}}
+\cdot \frac{{1}}{{(1+{wacc_str})^{{{n_str}}}}}
+\;=\; {EV:,.0f}
+""")
 
 
-# # --- Step 1: PV of forecast years ---
-# fcff_forecast_selected["pv_fcff"] = fcff_forecast_selected.apply(
-#     lambda row: row["forecast_fcff"] / ((1 + WACC) ** (row["year"] - latest_fcff.loc[latest_fcff["symbol"] == selected_symbol, "calendar_year"].values[0])),
-#     axis=1
-# )
-
-# # --- Step 2: Terminal value ---
-# fcff_year5 = fcff_forecast_selected.sort_values("year").iloc[-1]["forecast_fcff"]
-# terminal_value = fcff_year5 * (1 + lt_growth) / (WACC - lt_growth)
-# pv_terminal_value = terminal_value / ((1 + WACC) ** 5)
-
-# # --- Step 3: Total DCF value ---
-# dcf_value = fcff_forecast_selected["pv_fcff"].sum() + pv_terminal_value
-
-# st.write(f"""
-# The DCF value for {selected_symbol} is **${dcf_value:,.2f}**.
-#          """)
+    # Implied CAGR and long-term growth in equation form
+    st.latex(fr"""
+    g  = {g_str},
+    \quad
+    g_{{\text{{LT}}}} = \frac{{g}}{2} = {glt_str}
+    """)
