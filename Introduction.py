@@ -130,3 +130,44 @@ required_return_plot = (
 required_return_plot.save("./images/required_return.png", dpi=300)
 
 st.image("./images/required_return.png", caption="Required Return on Equity for Dow Jones Industrial Average constituents")
+
+st.write("""### Required Return on Debt ($r_d$)""")
+
+st.write(r"""
+         Firms have a cost of debt, which is the interest rate a company pays on its debt, such as bonds and loans. 
+         From the lender's perspective, this rate is the required return on debt.
+
+         We can obtain it directly from the firm's Interest Expense from the Income Statement and Total Debt from the Balance Sheet.
+
+         After dividing the Interest Expense by Total Debt to calculate the required rate of return on debt, we need to multiply this rate 
+         by (1 - tax rate) to account for the tax shield on interest payments. The reason for this is because there are tax deductions on interest paids. 
+         As a result, the net cost of a company's debt is the amount of interesst the firm is paying minus the amount it has saved in taxes because of its 
+         tax-deductible interest payments.
+         """)
+
+# load the cost of debt data from the CSV file
+cost_of_debt = pd.read_csv("./data/cost_of_debt.csv")
+
+cost_of_debt = cost_of_debt.sort_values(by="after_tax_cost_of_debt", ascending=True)
+
+
+# plot the column after_tax_cost_of_debt as the required return on debt
+cost_of_debt["symbol"] = pd.Categorical(
+    cost_of_debt["symbol"],
+    categories=cost_of_debt["symbol"],  # keeps the sorted order
+    ordered=True
+)
+
+cost_of_debt_plot = (
+    ggplot(cost_of_debt, aes(x="symbol", y="after_tax_cost_of_debt")) +
+    geom_col() +
+    scale_y_continuous(labels=percent_format()) +
+    coord_flip() +
+    labs(
+        x="Required Return on Debt", y="",
+        title="Required Return on Debt"
+    )
+)
+cost_of_debt_plot.save("./images/cost_of_debt.png", dpi=300)
+
+st.image("./images/cost_of_debt.png", caption="Required Return on Debt")
