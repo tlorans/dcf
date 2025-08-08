@@ -234,3 +234,44 @@ st.image(
     "./images/capital_structure_stacked.png",
     caption="Capital Structure (Debt vs Equity) of Dow Jones Industrial Average constituents"
 )
+
+st.write("""### Bringing it all together: WACC""")
+
+st.write(r"""
+         Now that we have all the components, we can calculate the WACC.
+         """)
+
+# Calculate WACC for each stock, by merging the betas, cost of debt, and capital structure data
+wacc_data = pd.merge(betas, cost_of_debt, on="symbol")
+wacc_data = pd.merge(wacc_data, capital_structure, on="symbol")
+
+# Calculate WACC using the formula
+wacc_data["WACC"] = (
+    wacc_data["w_equity"] * wacc_data["required_return"] +
+    wacc_data["w_debt"] * wacc_data["after_tax_cost_of_debt"]
+)
+
+# Sort by WACC
+wacc_data = wacc_data.sort_values(by="WACC", ascending=True)
+# Make symbol a categorical variable with the correct order
+wacc_data["symbol"] = pd.Categorical(
+    wacc_data["symbol"],
+    categories=wacc_data["symbol"],  # keeps the sorted order
+    ordered=True
+)
+
+# Plot WACC
+wacc_plot = (
+    ggplot(wacc_data, aes(x="symbol", y="WACC")) +
+    geom_col() +
+    scale_y_continuous(labels=percent_format()) +
+    coord_flip() +
+ 
+    labs(
+        x="", y="WACC",
+        title="Weighted Average Cost of Capital (WACC)"
+    )
+)
+wacc_plot.save("./images/wacc.png", dpi=300)
+
+st.image("./images/wacc.png", caption="WACC for Dow Jones Industrial Average constituents")
