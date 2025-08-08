@@ -25,13 +25,81 @@ That pile of remaining cash is called free cash flow to the firm (FCFF), because
          """)
 
 st.write(r"""
-The formal definition of FCFF is the cash available to all of the firm's investors, including stockholders and bonholders, after the firm buys and sells products,
+The formal definition of FCFF is the cash available to all of the firm's investors, including stockholders and bondholders, after the firm buys and sells products,
          provides services, pays its cash operating expenses and makes short-term and long-term investments.
          """)
 
+st.write(r"""
+The formula for FCFF is:
+         """)
+
+st.latex(r"""
+\text{FCFF} = \text{EBIT} + \text{D\&A} - \text{Taxes} + \Delta \text{WC} - \text{CapEx}
+         """)
 
 st.write(r"""
-With a FCFF valuation model, one can typically choose between a singel-stage, a two-stage, or a three-stage model.
+where:
+- EBIT is Earnings Before Interest and Taxes measures core operating profit 
+- D&A is Depreciation and Amortization, which are non-cash expenses that reduce EBIT
+- Taxes are the cash taxes paid by the firm
+- $\Delta$ WC is the change in working capital, which is the difference between current assets and current liabilities (excluding cash and short-term debt)
+- CapEx is Capital Expenditures, which are the firm's investments in long-term assets like property, plant, and equipment
+         """)
+
+income_statements = pd.read_csv('./data/income_statements.csv')
+cash_flow_statements = pd.read_csv('./data/cash_flow_statements.csv')
+
+dcf_data = (income_statements
+    .get(["symbol", "calendar_year", "net_income", "income_tax_expense", "interest_expense", "interest_income"])
+  .assign(
+    ebit=lambda x: x["net_income"] + x["income_tax_expense"] + x["interest_expense"] - x["interest_income"]
+  )
+  .merge(
+    (cash_flow_statements
+      .rename(columns={
+        "change_in_working_capital": "delta_working_capital",
+        "capital_expenditure": "capex"
+      })
+    ), on=["calendar_year", "symbol"], how="inner"
+  )
+  .assign(
+    fcff=lambda x: x["ebit"] + x["depreciation_and_amortization"] - x["income_tax_expense"] + x["delta_working_capital"] - x["capex"]
+  )
+  .sort_values("calendar_year")
+  # keep only symbol, calendar_year and fcff
+  .get(["symbol", "calendar_year", "fcff"])
+  .reset_index(drop=True)
+)
+
+# take the most recent year for each symbol
+dcf_data = dcf_data.groupby("symbol").last().reset_index()
+
+# sort by fcff
+dcf_data = dcf_data.sort_values(by="fcff", ascending=True)
+
+# Make symbol a categorical variable with the correct order
+dcf_data["symbol"] = pd.Categorical(
+    dcf_data["symbol"],
+    categories=dcf_data["symbol"],  # keeps the sorted order
+    ordered=True
+)
+
+# Plot
+fcff_plot = (
+    ggplot(dcf_data, aes(x="symbol", y="fcff")) +
+    geom_col() +
+    coord_flip() +
+    labs(title="Free Cash Flow to the Firm (FCFF)",
+         x="",
+         y="")
+)
+
+fcff_plot.save("./images/fcff.png", dpi=300)
+
+st.image("./images/fcff.png", caption="Free Cash Flow to the Firm (FCFF) for Dow Jones Industrial Average constituents")
+
+st.write(r"""
+With a FCFF valuation model, one can typically choose between a single-stage, a two-stage, or a three-stage model.
          Single-stage FCFF model is useful for stable firms. Multi-stage models are useful for firms that are expected to grow at different rates in the future.
 We use a two-stage FCFF valuation model here.""")
 
@@ -275,3 +343,8 @@ wacc_plot = (
 wacc_plot.save("./images/wacc.png", dpi=300)
 
 st.image("./images/wacc.png", caption="WACC for Dow Jones Industrial Average constituents")
+
+st.write("""## Free Cash Flow to the Firm (FCFF)""")
+
+st.write(""" ### Forecasting FCFF""")
+
