@@ -347,7 +347,7 @@ def firm_value_from_g(FCFF0, WACC, n, g):
 
     return stage1 + stage2
 
-def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=-0.9, g_high=None, tol=1e-8, max_iter=200):
+def implied_cagr_from_price(FCFF0, WACC, n, EV, g_low=0., g_high=WACC, tol=1e-8, max_iter=200):
     # Upper bound must respect g/2 < WACC -> g < 2*WACC
     if g_high is None:
         g_high = min(2*WACC - 1e-6, 0.5)  # cap to something sane like 50%
