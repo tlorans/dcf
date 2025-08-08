@@ -49,54 +49,52 @@ where:
 income_statements = pd.read_csv('./data/income_statements.csv')
 cash_flow_statements = pd.read_csv('./data/cash_flow_statements.csv')
 
-dcf_data = (income_statements
-    .get(["symbol", "calendar_year", "net_income", "income_tax_expense", "interest_expense", "interest_income"])
-  .assign(
-    ebit=lambda x: x["net_income"] + x["income_tax_expense"] + x["interest_expense"] - x["interest_income"]
-  )
-  .merge(
-    (cash_flow_statements
-      .rename(columns={
-        "change_in_working_capital": "delta_working_capital",
-        "capital_expenditure": "capex"
-      })
-    ), on=["calendar_year", "symbol"], how="inner"
-  )
-  .assign(
-    fcff=lambda x: x["ebit"] + x["depreciation_and_amortization"] - x["income_tax_expense"] + x["delta_working_capital"] - x["capex"]
-  )
-  .sort_values("calendar_year")
-  # keep only symbol, calendar_year and fcff
-  .get(["symbol", "calendar_year", "fcff"])
-  .reset_index(drop=True)
+# select a symbol from the dropdown
+selected_symbol = st.sidebar.selectbox(
+    "Select a symbol to view its FCFF data",
+    income_statements["symbol"].unique()
 )
 
-# take the most recent year for each symbol
-dcf_data = dcf_data.groupby("symbol").last().reset_index()
+income_statements_selected = income_statements[income_statements["symbol"] == selected_symbol]
+cash_flow_statements_selected = cash_flow_statements[cash_flow_statements["symbol"] == selected_symbol]
 
-# sort by fcff
-dcf_data = dcf_data.sort_values(by="fcff", ascending=True)
+# get the latest data for the selected symbol
+latest_income_statement = income_statements_selected.sort_values("calendar_year").iloc[-1]
+latest_cash_flow_statement = cash_flow_statements_selected.sort_values("calendar_year").iloc[-1]
 
-# Make symbol a categorical variable with the correct order
-dcf_data["symbol"] = pd.Categorical(
-    dcf_data["symbol"],
-    categories=dcf_data["symbol"],  # keeps the sorted order
-    ordered=True
-)
 
-# Plot
-fcff_plot = (
-    ggplot(dcf_data, aes(x="symbol", y="fcff")) +
-    geom_col() +
-    coord_flip() +
-    labs(title="Free Cash Flow to the Firm (FCFF)",
-         x="",
-         y="")
-)
+net_income = latest_income_statement["net_income"]
+income_tax_expense = latest_income_statement["income_tax_expense"]
+interest_expense = latest_income_statement["interest_expense"]
+interest_income = latest_income_statement["interest_income"]
+ebit = net_income + income_tax_expense + interest_expense - interest_income
 
-fcff_plot.save("./images/fcff.png", dpi=300)
+st.write(f"""The EBIT can be computed as:""")
 
-st.image("./images/fcff.png", caption="Free Cash Flow to the Firm (FCFF) for Dow Jones Industrial Average constituents")
+st.latex(r"""
+\text{EBIT} = \text{Net Income} + \text{Income Tax Expense} + \text{Interest Expense} - \text{Interest Income}
+         """)
+
+# string interpolated formula for EBIT
+ebit_formula = f"""
+{ebit:,.0f} = {net_income:,.0f} + {income_tax_expense:,.0f} + {interest_expense:,.0f} - {interest_income:,.0f}
+"""
+st.latex(ebit_formula)
+
+depreciation_and_amortization = latest_cash_flow_statement["depreciation_and_amortization"]
+delta_working_capital = latest_cash_flow_statement["change_in_working_capital"]
+capex = latest_cash_flow_statement["capital_expenditure"]
+
+fcff = (ebit + depreciation_and_amortization - income_tax_expense + delta_working_capital - capex)
+
+
+st.write(f"""The FCFF is therefore:""")
+
+# string interpolated formula for FCFF
+fcff_formula = f"""
+{fcff:,.0f} = {ebit:,.0f} + {depreciation_and_amortization:,.0f} - {income_tax_expense:,.0f} + {delta_working_capital:,.0f} - {capex:,.0f}
+"""
+st.latex(fcff_formula)
 
 st.write(r"""
 With a FCFF valuation model, one can typically choose between a single-stage, a two-stage, or a three-stage model.
@@ -164,40 +162,31 @@ erp = 0.0433  # Example: 4.33% equity risk premium
 st.write(rf""" We take the last estimated ERP from Damodaran's website, which is {erp * 100:.2f}%.""")
 
 
-st.write("""We compute the betas for the Dow Jones Industrial Average constituents using the CAPM model, using monthly returns and the last 5 years of data.""")
-
-st.image("./images/betas.png", caption="Betas for Dow Jones Industrial Average constituents")
+st.write("""We compute the betas using the CAPM model, using monthly returns and the last 5 years of data.""")
 
 # load the betas from the CSV file
 betas = pd.read_csv("./data/betas.csv")
 
-# Calculate the required return on equity for each stock
-betas["required_return"] = risk_free_rate + betas["estimate"] * erp
-# Sort the betas by required return
-betas = betas.sort_values(by="required_return", ascending=True)
+selected_beta = betas[betas["symbol"] == selected_symbol]["estimate"].values[0]
 
-# Make symbol a categorical variable with the correct order
-betas["symbol"] = pd.Categorical(
-    betas["symbol"],
-    categories=betas["symbol"],  # keeps the sorted order
-    ordered=True
-)
+st.write(f"""The beta for {selected_symbol} is:""")
+st.latex(f"""\\beta = {selected_beta:.2f}
+""")
 
-# Plot
-required_return_plot = (
-    ggplot(betas, aes(x="symbol", y="required_return")) +
-    geom_col() +
-    scale_y_continuous(labels=percent_format()) +
-    coord_flip() +
-    labs(
-        x="Required Return on Equity", y="", 
-        title="Required Return on Equity"
-    )
-)
+# string interpolated equation for required return on equity
+st.write(rf"""The required return on equity for {selected_symbol} is given by the formula:
+         """)
 
-required_return_plot.save("./images/required_return.png", dpi=300)
+st.latex(rf"""
+r_e = {risk_free_rate * 100:.2f}\% + {selected_beta:.2f} \cdot ({erp * 100:.2f}\%)
+""")
 
-st.image("./images/required_return.png", caption="Required Return on Equity for Dow Jones Industrial Average constituents")
+# string interpolated formula for required return on equity
+required_return = risk_free_rate + selected_beta * erp
+required_return_str = f"{required_return * 100:.2f}%"
+
+st.write(f"""The required return on equity for {selected_symbol} is therefore {required_return_str}.
+""")
 
 st.write("""### Required Return on Debt ($r_d$)""")
 
@@ -215,30 +204,19 @@ st.write(r"""
 
 # load the cost of debt data from the CSV file
 cost_of_debt = pd.read_csv("./data/cost_of_debt.csv")
+selected_cost_of_debt = cost_of_debt[cost_of_debt["symbol"] == selected_symbol]
 
-cost_of_debt = cost_of_debt.sort_values(by="after_tax_cost_of_debt", ascending=True)
+cost_of_debt = selected_cost_of_debt["cost_of_debt"].values[0]
+tax_rate = selected_cost_of_debt["avg_effective_tax_rate"].values[0]
+after_tax_cost_of_debt = selected_cost_of_debt["after_tax_cost_of_debt"].values[0]
 
+st.latex(f"""
+r_d = {cost_of_debt * 100:.2f}\% \cdot (1 - {tax_rate:.2f})
+""")
 
-# plot the column after_tax_cost_of_debt as the required return on debt
-cost_of_debt["symbol"] = pd.Categorical(
-    cost_of_debt["symbol"],
-    categories=cost_of_debt["symbol"],  # keeps the sorted order
-    ordered=True
-)
-
-cost_of_debt_plot = (
-    ggplot(cost_of_debt, aes(x="symbol", y="after_tax_cost_of_debt")) +
-    geom_col() +
-    scale_y_continuous(labels=percent_format()) +
-    coord_flip() +
-    labs(
-        x="Required Return on Debt", y="",
-        title="Required Return on Debt"
-    )
-)
-cost_of_debt_plot.save("./images/cost_of_debt.png", dpi=300)
-
-st.image("./images/cost_of_debt.png", caption="Required Return on Debt")
+st.latex(f"""
+         = {after_tax_cost_of_debt * 100:.2f}\%
+""")
 
 st.write("""### Estimating the Capital Structure""")
 
@@ -254,54 +232,28 @@ the market value of debt usually does not deviate too far from the book value. W
 the Balance Sheet.
          """)
 
-# load the capital structure data from the CSV file
-capital_structure = pd.read_csv("./data/capital_structure.csv")
+market_cap = pd.read_csv("./data/market_caps.csv")
+# Load balance sheet statements
+balance_sheet_statements = pd.read_csv("./data/balance_sheet_statements.csv")
 
-# If not already there, compute equity weight as the residual
-if "w_equity" not in capital_structure.columns:
-    capital_structure["w_equity"] = 1 - capital_structure["w_debt"]
+selected_market_cap = market_cap[market_cap["symbol"] == selected_symbol]
+selected_balance_sheet = balance_sheet_statements[balance_sheet_statements["symbol"] == selected_symbol]
 
-# Reshape to long format for stacked bars
-capital_structure_long = capital_structure.melt(
-    id_vars=["symbol"],
-    value_vars=["w_debt", "w_equity"],
-    var_name="component",
-    value_name="weight"
-)
+# get the latest balance sheet data for the selected symbol
+latest_balance_sheet = selected_balance_sheet.sort_values("calendar_year").iloc[-1]
+net_debt = latest_balance_sheet["net_debt"]
+market_cap = selected_market_cap["market_cap"].values[0]
+we = selected_market_cap["market_cap"].values[0] / (selected_market_cap["market_cap"].values[0] + net_debt)
+wd = net_debt / (selected_market_cap["market_cap"].values[0] + net_debt)
 
-# Sort by debt weight (so order is consistent)
-order_symbols = (
-    capital_structure.sort_values(by="w_debt", ascending=True)["symbol"]
-)
-capital_structure_long["symbol"] = pd.Categorical(
-    capital_structure_long["symbol"],
-    categories=order_symbols,
-    ordered=True
-)
 
-# Plot stacked bar chart
-capital_structure_plot = (
-    ggplot(capital_structure_long, aes(x="symbol", y="weight", fill="component")) +
-    geom_col() +
-    scale_y_continuous(labels=percent_format()) +
-    coord_flip() +
-    scale_fill_manual(
-        values={"w_debt": "#d95f02", "w_equity": "#1b9e77"},
-        labels={"w_debt": "Debt", "w_equity": "Equity"}
-    ) +
-    labs(
-        x="", y="",
-        fill="Component",
-        title="Capital Structure: Debt vs Equity"
-    )
-)
+st.latex(f"""
+w_e = \\frac{{{market_cap:,.0f}}}{{{market_cap:,.0f} + {net_debt:,.0f}}} = {we:.2f}
+""")
 
-capital_structure_plot.save("./images/capital_structure_stacked.png", dpi=300)
-
-st.image(
-    "./images/capital_structure_stacked.png",
-    caption="Capital Structure (Debt vs Equity) of Dow Jones Industrial Average constituents"
-)
+st.latex(f"""
+w_d = \\frac{{{net_debt:,.0f}}}{{{market_cap:,.0f} + {net_debt:,.0f}}} = {wd:.2f}
+""")
 
 st.write("""### Bringing it all together: WACC""")
 
@@ -309,42 +261,107 @@ st.write(r"""
          Now that we have all the components, we can calculate the WACC.
          """)
 
-# Calculate WACC for each stock, by merging the betas, cost of debt, and capital structure data
-wacc_data = pd.merge(betas, cost_of_debt, on="symbol")
-wacc_data = pd.merge(wacc_data, capital_structure, on="symbol")
+WACC = we * required_return + wd * after_tax_cost_of_debt
+avg_effective_tax_rate = selected_cost_of_debt["avg_effective_tax_rate"].values[0]
 
-# Calculate WACC using the formula
-wacc_data["WACC"] = (
-    wacc_data["w_equity"] * wacc_data["required_return"] +
-    wacc_data["w_debt"] * wacc_data["after_tax_cost_of_debt"]
+# General WACC formula
+st.latex(r"""
+\text{WACC} = w_e \cdot r_e + w_d \cdot r_d (1 - \tau)
+""")
+
+# Numeric substitution
+st.latex(
+    fr"""
+\text{{WACC}} =
+{we * 100:.2f}\% \cdot {required_return * 100:.2f}\% +
+{wd * 100:.2f}\% \cdot {cost_of_debt * 100:.2f}\% \times (1 - {avg_effective_tax_rate * 100:.2f}\%)
+"""
 )
 
-# Sort by WACC
-wacc_data = wacc_data.sort_values(by="WACC", ascending=True)
-# Make symbol a categorical variable with the correct order
-wacc_data["symbol"] = pd.Categorical(
-    wacc_data["symbol"],
-    categories=wacc_data["symbol"],  # keeps the sorted order
-    ordered=True
+# Final computed WACC value
+st.latex(
+    fr"""
+\text{{WACC}} = {WACC * 100:.2f}\%
+"""
 )
 
-# Plot WACC
-wacc_plot = (
-    ggplot(wacc_data, aes(x="symbol", y="WACC")) +
-    geom_col() +
-    scale_y_continuous(labels=percent_format()) +
-    coord_flip() +
- 
-    labs(
-        x="", y="WACC",
-        title="Weighted Average Cost of Capital (WACC)"
-    )
-)
-wacc_plot.save("./images/wacc.png", dpi=300)
-
-st.image("./images/wacc.png", caption="WACC for Dow Jones Industrial Average constituents")
 
 st.write("""## Free Cash Flow to the Firm (FCFF)""")
 
 st.write(""" ### Forecasting FCFF""")
 
+st.write(r"""
+         The next step is to forecast the FCFF for the next 5 years. 
+         We can use the historical FCFF data to estimate the growth rate of FCFF, and then use that growth rate to forecast the FCFF for the next 5 years.
+
+         We estimate the growth rate with a CAGR (Compound Annual Growth Rate) calculation.
+         The long-term growth rate is the rate at which we expect the FCFF to grow after the first 5 years, assuming to be half of the CAGR.
+         """)
+
+
+
+# growth_forecast_data 
+growth_forecast_data = (
+    pd.read_csv("./data/growth_forecast.csv")
+)
+
+
+# Filter for the chosen symbol
+symbol_data = growth_forecast_data[growth_forecast_data["symbol"] == selected_symbol].iloc[0]
+
+# Parameters
+WACC = 0.08
+cagr = symbol_data["cagr"]
+lt_growth = symbol_data["long_term_growth"]
+n_years = 5  # forecast horizon
+# Example last historical FCFF (you may pull from your real data)
+FCFF0 = symbol_data["fcff"]
+
+# Build LaTeX-safe strings for rates with escaped percent signs
+wacc_str = f"{WACC*100:.2f}\\%"
+cagr_str = f"{cagr*100:.2f}\\%"
+ltg_str = f"{lt_growth*100:.2f}\\%"
+fcff0_str = f"{FCFF0:,.0f}"  # no decimals, thousands separator
+
+# Interpolated LaTeX formula with explicit growth
+latex_formula = fr"""
+\text{{Firm Value}} =
+\sum_{{t=1}}^{{{n_years}}}
+\underbrace{{\frac{{{fcff0_str} \times (1+{cagr_str})^t}}{{(1+{wacc_str})^t}}}}_{{\text{{Stage 1}}}}
++
+\underbrace{{\frac{{{fcff0_str} \times (1+{cagr_str})^{{{n_years+1}}}}}{{({wacc_str} - {ltg_str})}}
+\cdot \frac{{1}}{{(1+{wacc_str})^{n_years}}}}}_{{\text{{Stage 2}}}}
+"""
+# Display the LaTeX formula
+st.latex(latex_formula)
+
+# Optional: parameters summary
+st.write(f"**CAGR (5Y):** {cagr:.2%}")
+st.write(f"**Long-term growth rate:** {lt_growth:.2%}")
+st.write(f"**WACC:** {WACC:.2%}")
+
+# string interpolated formula for DCF where we put the value of cagr for growth rate 
+
+# # Merge with long-term growth rate
+# lt_growth = cagr_df.loc[cagr_df["symbol"] == selected_symbol, "long_term_growth"].values[0]
+
+# WACC = 0.08  # 8% discount rate
+
+
+# # --- Step 1: PV of forecast years ---
+# fcff_forecast_selected["pv_fcff"] = fcff_forecast_selected.apply(
+#     lambda row: row["forecast_fcff"] / ((1 + WACC) ** (row["year"] - latest_fcff.loc[latest_fcff["symbol"] == selected_symbol, "calendar_year"].values[0])),
+#     axis=1
+# )
+
+# # --- Step 2: Terminal value ---
+# fcff_year5 = fcff_forecast_selected.sort_values("year").iloc[-1]["forecast_fcff"]
+# terminal_value = fcff_year5 * (1 + lt_growth) / (WACC - lt_growth)
+# pv_terminal_value = terminal_value / ((1 + WACC) ** 5)
+
+# # --- Step 3: Total DCF value ---
+# dcf_value = fcff_forecast_selected["pv_fcff"].sum() + pv_terminal_value
+
+# st.write(f"""
+# The DCF value for {selected_symbol} is **${dcf_value:,.2f}**.
+#          """)
